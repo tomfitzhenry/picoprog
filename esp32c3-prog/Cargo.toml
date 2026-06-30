@@ -1,0 +1,18 @@
+[package]
+name = "esp32c3-prog"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+embassy-executor.workspace = true
+embassy-time.workspace = true
+embedded-hal.workspace = true
+embedded-hal-async.workspace = true
+embedded-io-async.workspace = true
+esp-backtrace = { workspace = true, features = ["esp32c3", "panic-handler", "println"] }
+esp-bootloader-esp-idf = { workspace = true, features = ["esp32c3"] }
+esp-hal = { workspace = true, features = ["esp32c3", "unstable"] }
+esp-println = { workspace = true, default-features = false, features = ["esp32c3", "no-op", "defmt-espflash"] }
+esp-rtos = { workspace = true, features = ["esp32c3", "embassy"] }
+serprog.workspace = true
