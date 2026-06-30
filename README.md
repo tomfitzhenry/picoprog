@@ -1,6 +1,6 @@
 # Picoprog
 
-Picoprog is a firmware for the Raspberry Pi Pico and STM32 BluePill boards that provides a USB-to-serial and USB-to-SPI bridge. It allows you to communicate with UART and SPI peripherals via USB.
+Picoprog is a firmware for the Raspberry Pi Pico, STM32 BluePill, and ESP32-C3 boards that provides a USB-to-serial and USB-to-SPI bridge. It allows you to communicate with UART and SPI peripherals via USB.
 
 ## Prerequisites
 
@@ -42,9 +42,16 @@ cd bluepill-prog
 cargo run --release
 ```
 
+For ESP32-C3:
+```sh
+cd esp32c3
+cargo build --release
+```
+
 3. The compiled binary will be located in:
    - Pico: `target/thumbv6m-none-eabi/release` directory
    - BluePill: `target/thumbv7m-none-eabi/release` directory
+   - ESP32-C3: `target/riscv32imc-unknown-none-elf/release` directory
 
 ## Flashing the Firmware
 
@@ -80,6 +87,19 @@ cd bluepill-prog
 cargo run --release
 ```
 
+### ESP32c3
+
+To flash the firmware onto an ESP32c3:
+
+1. Connect to your ESP32c3's USB port.
+
+2. Have espflash installed.
+
+3. Run the flasher
+```sh
+cd esp32c3
+cargo run --release
+```
 
 ## Usage
 
@@ -120,7 +140,6 @@ flashrom -p serprog:dev=/dev/ttyACM2 -w firmware.bin
 This command writes the contents of `firmware.bin` to the SPI flash chip.
 
 Make sure to replace `/dev/ttyACM2` with the correct serial port if your device is connected to a different port or if you're on a different operating system (on macOS it will be `/dev/tty.usbmodemOSFC20245`).
-
 
 ## License
 

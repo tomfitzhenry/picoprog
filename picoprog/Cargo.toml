@@ -9,7 +9,7 @@ authors = ["Marvin Drees <marvin.drees@9elements.com>"]
 assign-resources.workspace = true
 cortex-m = { workspace = true, features = ["inline-asm", "critical-section"] }
 cortex-m-rt.workspace = true
-embassy-executor = { workspace = true, features = ["arch-cortex-m", "executor-thread", "executor-interrupt", "nightly", "defmt"] }
+embassy-executor = { workspace = true, features = ["platform-cortex-m", "executor-thread", "executor-interrupt", "nightly", "defmt"] }
 embassy-futures.workspace = true
 embedded-hal.workspace = true
 embedded-hal-async.workspace = true
