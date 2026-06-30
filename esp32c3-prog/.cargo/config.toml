@@ -1,0 +1,8 @@
+[build]
+target = "riscv32imc-unknown-none-elf"
+
+[unstable]
+build-std = ["core"]
+
+[target.'cfg(target_arch = "riscv32")']
+runner = "espflash flash"

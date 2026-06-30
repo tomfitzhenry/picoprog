@@ -12,7 +12,7 @@ cortex-m-rt.workspace = true
 critical-section.workspace = true
 defmt-rtt.workspace = true
 defmt.workspace = true
-embassy-executor = { workspace = true, features = ["defmt", "arch-cortex-m", "executor-thread", "nightly"] }
+embassy-executor = { workspace = true, features = ["defmt", "platform-cortex-m", "executor-thread", "nightly"] }
 embassy-futures = { workspace = true, features = ["defmt"] }
 embassy-stm32 = { workspace = true, features = ["defmt", "stm32f103c8", "memory-x", "rt", "time-driver-any"] }
 embassy-sync = { workspace = true, features = ["defmt"] }
