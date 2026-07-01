@@ -3,7 +3,6 @@
 #![allow(async_fn_in_trait)]
 #![allow(incomplete_features)]
 #![feature(impl_trait_in_assoc_type)]
-#![feature(type_alias_impl_trait)]
 
 use defmt_rtt as _; // global logger
 
@@ -20,7 +19,6 @@ use embassy_stm32::usb::{Driver, InterruptHandler as USBInterruptHandler};
 use embassy_stm32::Peri;
 use embassy_time::Timer;
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
-use embassy_usb::driver::EndpointError;
 use embassy_usb::{Config as UsbConfig, UsbDevice};
 use heapless::String;
 use static_cell::StaticCell;
@@ -149,17 +147,6 @@ async fn main(spawner: Spawner) {
 
 type CustomUsbDriver = Driver<'static, USB>;
 type CustomUsbDevice = UsbDevice<'static, CustomUsbDriver>;
-
-struct Disconnected {}
-
-impl From<EndpointError> for Disconnected {
-    fn from(val: EndpointError) -> Self {
-        match val {
-            EndpointError::BufferOverflow => defmt::panic!("USB buffer overflow"),
-            EndpointError::Disabled => Disconnected {},
-        }
-    }
-}
 
 #[embassy_executor::task]
 async fn usb_task(mut usb: CustomUsbDevice) -> ! {
