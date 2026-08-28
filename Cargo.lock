@@ -1473,6 +1473,7 @@ version = "0.1.0"
 dependencies = [
  "embassy-executor",
  "embassy-net",
+ "embassy-sync 0.7.2",
  "embassy-time",
  "embedded-hal 1.0.0",
  "embedded-hal-async",
@@ -1485,6 +1486,7 @@ dependencies = [
  "esp-println",
  "esp-radio",
  "esp-rtos",
+ "rand_core 0.9.3",
  "serprog",
  "static_cell",
 ]

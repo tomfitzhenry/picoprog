@@ -4,15 +4,27 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 
+# One firmware serves serprog over both USB Serial/JTAG and WiFi/TCP
+# (port 4000). WiFi credentials are baked in at build time via
+# PICOPROG_WIFI_SSID / PICOPROG_WIFI_PASSWORD; if they are empty the
+# firmware is USB-only.
+
 [dependencies]
 embassy-executor.workspace = true
+embassy-net.workspace = true
+embassy-sync.workspace = true
 embassy-time.workspace = true
 embedded-hal.workspace = true
 embedded-hal-async.workspace = true
 embedded-io-async.workspace = true
+embedded-io-async-06.workspace = true
+esp-alloc.workspace = true
+esp-radio.workspace = true
+rand_core = "0.9"
+static_cell.workspace = true
 esp-backtrace = { workspace = true, features = ["esp32c3", "panic-handler", "println"] }
 esp-bootloader-esp-idf = { workspace = true, features = ["esp32c3"] }
 esp-hal = { workspace = true, features = ["esp32c3", "unstable"] }
 esp-println = { workspace = true, default-features = false, features = ["esp32c3", "no-op", "defmt-espflash"] }
-esp-rtos = { workspace = true, features = ["esp32c3", "embassy"] }
+esp-rtos = { workspace = true, features = ["esp32c3", "embassy", "esp-radio"] }
 serprog.workspace = true

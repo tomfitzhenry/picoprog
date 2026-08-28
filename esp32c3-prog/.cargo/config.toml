@@ -2,7 +2,9 @@
 target = "riscv32imc-unknown-none-elf"
 
 [unstable]
-build-std = ["core"]
+# The tcp feature's transitive graph (esp-radio) links `alloc`; building it
+# with build-std requires the alloc crate to be rebuilt alongside core.
+build-std = ["core", "alloc"]
 
 [target.'cfg(target_arch = "riscv32")']
 runner = "espflash flash"
