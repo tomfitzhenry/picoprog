@@ -20,12 +20,9 @@ struct UsbSerialJtagTransport<'d> {
 }
 
 impl<'d> serprog::transport::Transport<USB_BUFFER_SIZE> for UsbSerialJtagTransport<'d> {
-    async fn read(&mut self, buf: &mut [u8]) -> Result<(), ()> {
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, ()> {
         use embedded_io_async::Read;
-        Read::read(&mut self.usb_serial, buf)
-            .await
-            .map_err(|_| ())?;
-        Ok(())
+        Read::read(&mut self.usb_serial, buf).await.map_err(|_| ())
     }
 
     async fn write(&mut self, data: &[u8]) -> Result<(), ()> {
@@ -61,7 +58,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
         .into_async();
 
     let usb_serial = UsbSerialJtag::new(peripherals.USB_DEVICE).into_async();
-    let transport = UsbSerialJtagTransport { usb_serial };
+    let mut transport = UsbSerialJtagTransport { usb_serial };
 
     let set_freq_cb = move |spi: &mut Spi<'_, esp_hal::Async>, freq: u32| {
         let config = SpiConfig::default().with_frequency(Rate::from_hz(freq));
@@ -70,13 +67,10 @@ async fn main(_spawner: embassy_executor::Spawner) {
         let _ = spi.apply_config(&config);
     };
 
-    let serprog = serprog::Serprog::<_, _, _, _, _, USB_BUFFER_SIZE>::new(
-        spi,
-        cs,
-        led,
-        transport,
-        Some(set_freq_cb),
-    );
-
-    serprog.run_loop().await
+    let mut serprog =
+        serprog::Serprog::<_, _, _, _, USB_BUFFER_SIZE>::new(spi, cs, led, Some(set_freq_cb));
+    let _ = serprog.run_loop(&mut transport).await;
+    loop {
+        core::future::pending::<()>().await
+    }
 }

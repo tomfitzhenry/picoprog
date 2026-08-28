@@ -177,16 +177,13 @@ async fn serprog_task(mut class: CdcAcmClass<'static, CustomUsbDriver>, r: SpiRe
         let _ = spi.set_config(&config);
     };
 
+    let mut serprog =
+        serprog::Serprog::<_, _, _, _, USB_BUFFER_SIZE>::new(spi, cs, led, Some(set_freq_cb));
     loop {
         class.wait_connection().await;
-        let serprog = serprog::Serprog::<_, _, _, _, _, USB_BUFFER_SIZE>::new(
-            spi,
-            cs,
-            led,
-            class,
-            Some(set_freq_cb),
-        );
-        serprog.run_loop().await
+        if let Err(e) = serprog.run_loop(&mut class).await {
+            error!("Transport error: {:?}", e);
+        }
     }
 }
 

@@ -134,7 +134,7 @@ async fn usb_task(mut usb: CustomUsbDevice) -> ! {
 }
 
 #[embassy_executor::task]
-async fn serprog_task(class: CdcAcmClass<'static, CustomUsbDriver>, r: SpiResources) -> ! {
+async fn serprog_task(mut class: CdcAcmClass<'static, CustomUsbDriver>, r: SpiResources) -> ! {
     let mut config = SpiConfig::default();
     config.frequency = 12_000_000; // 12 MHz
 
@@ -154,14 +154,14 @@ async fn serprog_task(class: CdcAcmClass<'static, CustomUsbDriver>, r: SpiResour
         spi.set_frequency(freq);
     };
 
-    let serprog = serprog::Serprog::<_, _, _, _, _, USB_BUFFER_SIZE>::new(
-        spi,
-        cs,
-        led,
-        class,
-        Some(set_freq_cb),
-    );
-    serprog.run_loop().await
+    let mut serprog =
+        serprog::Serprog::<_, _, _, _, USB_BUFFER_SIZE>::new(spi, cs, led, Some(set_freq_cb));
+    if let Err(e) = serprog.run_loop(&mut class).await {
+        defmt::error!("Transport error: {:?}", e);
+    }
+    loop {
+        core::future::pending::<()>().await
+    }
 }
 
 #[panic_handler]

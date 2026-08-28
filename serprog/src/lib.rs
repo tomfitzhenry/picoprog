@@ -1,8 +1,12 @@
 #![no_std]
 
+#[cfg(test)]
+#[macro_use]
+extern crate std;
+
 use core::convert::From;
 use core::result::Result::{Err, Ok};
-use embassy_futures::{block_on, join::join};
+use embassy_futures::join::join;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::zerocopy_channel::{Channel, Receiver, Sender};
 use embedded_hal::digital::OutputPin;
@@ -15,7 +19,7 @@ use transport::Transport;
 use zerocopy::byteorder::little_endian::{U16, U32};
 use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes, Unaligned};
 
-use defmt::{debug, error, Format};
+use defmt::{debug, Format};
 
 pub mod transport;
 
@@ -199,24 +203,27 @@ impl QCmdMapResponse {
     }
 }
 
-pub struct Serprog<SPI, CS, LED, T: Transport<TRANSFER_SIZE>, F, const TRANSFER_SIZE: usize> {
+pub struct Serprog<SPI, CS, LED, F, const TRANSFER_SIZE: usize> {
     spi: SPI,
     cs: CS,
     led: LED,
-    transport: T,
     freq_callback: Option<F>,
 }
 
-async fn ospiop_usb_task<T: Transport<TRANSFER_SIZE>, const TRANSFER_SIZE: usize>(
+async fn ospiop_transport_task<T: Transport<TRANSFER_SIZE>, const TRANSFER_SIZE: usize>(
     transport: &mut T,
     mut sender: Sender<'_, NoopRawMutex, Vec<u8, TRANSFER_SIZE>>,
     sdata_size: usize,
     mut receiver: Receiver<'_, NoopRawMutex, Vec<u8, TRANSFER_SIZE>>,
     rdata_size: usize,
+    first_read_count: usize,
 ) -> Result<(), SerprogError> {
-    // First block - already contains header + initial data, send as-is
+    // First block - already contains header + initial data, send as-is.
+    // Only the bytes that actually arrived (minus the 6-byte header) count.
     let mut data_to_read = sdata_size;
-    let first_block_data_size = data_to_read.min(TRANSFER_SIZE - 6);
+    let first_block_data_size = first_read_count
+        .saturating_sub(6)
+        .min(data_to_read.min(TRANSFER_SIZE - 6));
     // Acquire the pre-populated buffer per channel protocol, but do not modify it.
     let _ = sender.send().await;
     sender.send_done();
@@ -228,12 +235,19 @@ async fn ospiop_usb_task<T: Transport<TRANSFER_SIZE>, const TRANSFER_SIZE: usize
         buf.clear();
         buf.resize(read_size, 0)
             .map_err(|_| SerprogError::TransportRead("Error resizing OSpiOp read buffer"))?;
-        transport
+        let n = transport
             .read(buf.as_mut_slice())
             .await
             .map_err(|_| SerprogError::TransportRead("Error reading OSpiOp data"))?;
+        if n == 0 {
+            return Err(SerprogError::TransportRead("short read"));
+        }
+        // Trim the buffer to the bytes actually read so the SPI task's
+        // `buf.len()`-based accounting agrees with ours.
+        buf.resize(n, 0)
+            .map_err(|_| SerprogError::TransportRead("Error resizing OSpiOp read buffer"))?;
         sender.send_done();
-        data_to_read -= read_size;
+        data_to_read -= n;
     }
     transport
         .write(&[S_ACK])
@@ -260,6 +274,7 @@ async fn ospiop_spi_task<SPI: SpiBus<u8>, CS: OutputPin, const TRANSFER_SIZE: us
     mut sender: Sender<'_, NoopRawMutex, Vec<u8, TRANSFER_SIZE>>,
     rdata_size: usize,
     cs: &mut CS,
+    first_read_count: usize,
 ) -> Result<(), SerprogError> {
     spi.flush()
         .await
@@ -268,14 +283,24 @@ async fn ospiop_spi_task<SPI: SpiBus<u8>, CS: OutputPin, const TRANSFER_SIZE: us
     cs.set_low()
         .map_err(|_| SerprogError::CsSetLow("Error setting CS low"))?;
     let mut data_to_write = sdata_size;
+    // Only the data bytes that actually arrived in the first buffer count.
+    let first_block_data_size = first_read_count
+        .saturating_sub(6)
+        .min(data_to_write.min(TRANSFER_SIZE - 6));
     let mut is_first = true;
     while data_to_write > 0 {
         let buf = receiver.receive().await;
         let write_slice = if is_first {
             // First buffer: skip the 6-byte header
             is_first = false;
-            let data_len = data_to_write.min(TRANSFER_SIZE - 6);
+            let data_len = data_to_write.min(first_block_data_size);
             data_to_write -= data_len;
+            if data_len == 0 {
+                // Partial arrival with no data yet: nothing to write, and the
+                // remaining data arrives in subsequent buffers.
+                receiver.receive_done();
+                continue;
+            }
             &buf[6..6 + data_len]
         } else {
             // Subsequent buffers: use entire buffer
@@ -306,25 +331,26 @@ async fn ospiop_spi_task<SPI: SpiBus<u8>, CS: OutputPin, const TRANSFER_SIZE: us
     Ok(())
 }
 
-impl<SPI, CS, LED, T, F, const TRANSFER_SIZE: usize> Serprog<SPI, CS, LED, T, F, TRANSFER_SIZE>
+impl<SPI, CS, LED, F, const TRANSFER_SIZE: usize> Serprog<SPI, CS, LED, F, TRANSFER_SIZE>
 where
     SPI: SpiBus<u8>,
     CS: OutputPin,
     LED: OutputPin,
-    T: Transport<TRANSFER_SIZE>,
     F: FnMut(&mut SPI, u32) + Send + Sync,
 {
-    pub fn new(spi: SPI, cs: CS, led: LED, transport: T, freq_callback: Option<F>) -> Self {
+    pub fn new(spi: SPI, cs: CS, led: LED, freq_callback: Option<F>) -> Self {
         Self {
             spi,
             cs,
             led,
-            transport,
             freq_callback,
         }
     }
 
-    pub async fn run_loop(mut self) -> !
+    pub async fn run_loop<T: Transport<TRANSFER_SIZE>>(
+        &mut self,
+        transport: &mut T,
+    ) -> Result<(), SerprogError>
     where
         CS::Error: core::fmt::Debug,
         LED::Error: core::fmt::Debug,
@@ -332,19 +358,21 @@ where
         let mut buf = [0; 1];
 
         loop {
-            if self.transport.read(&mut buf).await.is_err() {
-                error!("Read error in main loop");
-                continue;
-            }
+            transport
+                .read(&mut buf)
+                .await
+                .map_err(|_| SerprogError::TransportRead("Read error in main loop"))?;
 
             let cmd = SerprogCommand::try_from(buf[0]).unwrap_or(SerprogCommand::Nop);
-            if let Err(e) = self.handle_command(cmd).await {
-                error!("Command error: {:?}", e);
-            }
+            self.handle_command(cmd, transport).await?;
         }
     }
 
-    async fn handle_command(&mut self, cmd: SerprogCommand) -> Result<(), SerprogError>
+    async fn handle_command<T: Transport<TRANSFER_SIZE>>(
+        &mut self,
+        cmd: SerprogCommand,
+        transport: &mut T,
+    ) -> Result<(), SerprogError>
     where
         CS::Error: core::fmt::Debug,
         LED::Error: core::fmt::Debug,
@@ -352,7 +380,7 @@ where
         match cmd {
             SerprogCommand::Nop => {
                 debug!("Received Nop CMD");
-                self.transport
+                transport
                     .write(&[S_ACK])
                     .await
                     .map_err(|_| SerprogError::TransportWrite("Error writing ACK"))?;
@@ -364,7 +392,7 @@ where
                     ack: S_ACK,
                     version: U16::new(1),
                 };
-                self.transport
+                transport
                     .write(response.as_bytes())
                     .await
                     .map_err(|_| SerprogError::TransportWrite("Error writing QIface response"))?;
@@ -373,7 +401,7 @@ where
             SerprogCommand::QCmdMap => {
                 debug!("Received QCmdMap CMD");
                 let response = QCmdMapResponse::new(self.freq_callback.is_some());
-                self.transport
+                transport
                     .write(response.as_bytes())
                     .await
                     .map_err(|_| SerprogError::TransportWrite("Error writing QCmdMap response"))?;
@@ -382,7 +410,7 @@ where
             SerprogCommand::QPgmName => {
                 debug!("Received QPgmName CMD");
                 let response = QPgmNameResponse::new("Picoprog");
-                self.transport
+                transport
                     .write(response.as_bytes())
                     .await
                     .map_err(|_| SerprogError::TransportWrite("Error writing QPgmName response"))?;
@@ -390,7 +418,7 @@ where
             }
             SerprogCommand::QSerBuf => {
                 debug!("Received QSerBuf CMD");
-                self.transport
+                transport
                     .write(&[S_ACK, 0xFF, 0xFF])
                     .await
                     .map_err(|_| SerprogError::TransportWrite("Error writing QSerBuf response"))?;
@@ -399,7 +427,7 @@ where
             SerprogCommand::QWrNMaxLen | SerprogCommand::QRdNMaxLen => {
                 debug!("Received QWrNMaxLen/QRdNMaxLen CMD");
                 let response = QMaxLenResponse::new(MAX_BUFFER_SIZE);
-                self.transport
+                transport
                     .write(response.as_bytes())
                     .await
                     .map_err(|_| SerprogError::TransportWrite("Error writing QMaxLen response"))?;
@@ -407,7 +435,7 @@ where
             }
             SerprogCommand::QBustype => {
                 debug!("Received QBustype CMD");
-                self.transport
+                transport
                     .write(&[S_ACK, 0x08])
                     .await
                     .map_err(|_| SerprogError::TransportWrite("Error writing QBustype response"))?;
@@ -415,7 +443,7 @@ where
             }
             SerprogCommand::SyncNop => {
                 debug!("Received SyncNop CMD");
-                self.transport
+                transport
                     .write(&[S_NAK, S_ACK])
                     .await
                     .map_err(|_| SerprogError::TransportWrite("Error writing SyncNop response"))?;
@@ -424,19 +452,19 @@ where
             SerprogCommand::SBustype => {
                 debug!("Received SBustype CMD");
                 let mut buf = [0u8; 1];
-                self.transport
+                transport
                     .read(&mut buf)
                     .await
                     .map_err(|_| SerprogError::TransportRead("Error reading SBustype data"))?;
                 if buf[0] == 0x08 {
                     debug!("Received SBustype 'SPI'");
-                    self.transport
+                    transport
                         .write(&[S_ACK])
                         .await
                         .map_err(|_| SerprogError::TransportWrite("Error writing SBustype ACK"))?;
                 } else {
                     debug!("Received unknown SBustype");
-                    self.transport
+                    transport
                         .write(&[S_NAK])
                         .await
                         .map_err(|_| SerprogError::TransportWrite("Error writing SBustype NAK"))?;
@@ -451,10 +479,28 @@ where
                 usb_rx_spi_tx_buf[0]
                     .resize(TRANSFER_SIZE, 0)
                     .map_err(|_| SerprogError::TransportRead("Error resizing OSpiOp buffer"))?;
-                self.transport
-                    .read(usb_rx_spi_tx_buf[0].as_mut_slice())
-                    .await
-                    .map_err(|_| SerprogError::TransportRead("Error reading OSpiOp data"))?;
+                // A TCP segment boundary can land inside the 6-byte header, so
+                // accumulate reads until the header is complete or the buffer
+                // is full, whichever comes first. Over USB the first read
+                // already delivers the whole message and this loop body never
+                // executes.
+                let first_read_count = {
+                    let mut filled = transport
+                        .read(usb_rx_spi_tx_buf[0].as_mut_slice())
+                        .await
+                        .map_err(|_| SerprogError::TransportRead("Error reading OSpiOp data"))?;
+                    while filled < 6 && filled < TRANSFER_SIZE {
+                        let n = transport
+                            .read(&mut usb_rx_spi_tx_buf[0].as_mut_slice()[filled..])
+                            .await
+                            .map_err(|_| SerprogError::TransportRead("Error reading OSpiOp data"))?;
+                        if n == 0 {
+                            return Err(SerprogError::TransportRead("short read"));
+                        }
+                        filled += n;
+                    }
+                    filled
+                };
 
                 // Parse header from the first buffer
                 let op_slen = le_u24_to_u32(&usb_rx_spi_tx_buf[0][0..3]) as usize;
@@ -469,7 +515,7 @@ where
                     Channel::new(&mut usb_tx_spi_rx_buf);
                 let (spi_rx, usb_tx) = usb_tx_spi_rx_channel.split();
 
-                let (spi_res, usb_res) = block_on(join(
+                let (spi_res, usb_res) = join(
                     ospiop_spi_task::<_, _, TRANSFER_SIZE>(
                         &mut self.spi,
                         spi_tx,
@@ -477,17 +523,20 @@ where
                         spi_rx,
                         op_rlen,
                         &mut self.cs,
+                        first_read_count,
                     ),
-                    ospiop_usb_task::<_, TRANSFER_SIZE>(
-                        &mut self.transport,
+                    ospiop_transport_task::<_, TRANSFER_SIZE>(
+                        transport,
                         usb_rx,
                         op_slen,
                         usb_tx,
                         op_rlen,
+                        first_read_count,
                     ),
-                ));
+                )
+                .await;
                 if let Err(spi_err) = spi_res {
-                    self.transport
+                    transport
                         .write(&[S_NAK])
                         .await
                         .map_err(|_| SerprogError::TransportWrite("Failed to report SPI failed"))?;
@@ -500,7 +549,7 @@ where
             SerprogCommand::SSpiFreq => {
                 debug!("Received SSpiFreq CMD");
                 let mut request = SSpiFreqRequest::new_zeroed();
-                self.transport
+                transport
                     .read(request.as_mut_bytes())
                     .await
                     .map_err(|_| SerprogError::TransportRead("Error reading SSpiFreq data"))?;
@@ -521,7 +570,7 @@ where
                     freq: U32::new(try_freq), // TODO can we report what the hardware has set up?
                 };
 
-                self.transport
+                transport
                     .write(response.as_bytes())
                     .await
                     .map_err(|_| SerprogError::TransportWrite("Error writing SSpiFreq response"))?;
@@ -531,7 +580,7 @@ where
             SerprogCommand::SPinState => {
                 debug!("Received SPinState CMD");
                 let mut buf = [0u8; 1];
-                self.transport
+                transport
                     .read(&mut buf)
                     .await
                     .map_err(|_| SerprogError::TransportRead("Error reading SPinState data"))?;
@@ -544,7 +593,7 @@ where
                         .set_high()
                         .map_err(|_| SerprogError::LedSetHigh("Error setting LED high"))?;
                 }
-                self.transport
+                transport
                     .write(&[S_ACK])
                     .await
                     .map_err(|_| SerprogError::TransportWrite("Error writing SPinState ACK"))?;
@@ -553,7 +602,7 @@ where
             }
             _ => {
                 debug!("Received unknown CMD");
-                self.transport.write(&[S_NAK]).await.map_err(|_| {
+                transport.write(&[S_NAK]).await.map_err(|_| {
                     SerprogError::TransportWrite("Error writing unknown command NAK")
                 })?;
 
@@ -562,3 +611,6 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

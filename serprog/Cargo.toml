@@ -16,3 +16,9 @@ defmt.workspace = true
 num_enum.workspace = true
 tock-registers.workspace = true
 zerocopy.workspace = true
+
+[dev-dependencies]
+# End-to-end test client: rflasher drives a real serprog session against this
+# crate over loopback TCP, with a flash-chip emulator on the SPI side.
+rflasher-core = { git = "https://github.com/ArthurHeymans/rflasher", rev = "a92392b30c1b4928369cf7358c826d5dbbcf6b83" }
+rflasher-programmers = { git = "https://github.com/ArthurHeymans/rflasher", rev = "a92392b30c1b4928369cf7358c826d5dbbcf6b83", features = ["serprog"] }
